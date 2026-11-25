@@ -5,7 +5,7 @@
 // Firebase Modular SDK imports
 import { auth, db } from './firebase-config.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { doc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { doc, getDoc, updateDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 // ─── Auth / Session Utilities ───
 const Auth = {
@@ -449,328 +449,159 @@ function isHubVisible(item, user) {
   return isCampusHubItem(item, user);
 }
 
-// ─── Announcements Store ───
-const AnnouncementsStore = {
-  _key: 'campusnotify_announcements',
-  _deletedKey: 'campusnotify_announcements_deleted',
+// ─── Hub stores (Firebase: announcement_hub, event_hub, notification_hub) ───
+// The admin site publishes to Firestore. Each store below keeps a live, read-only copy for
+// the staff site. The last copy is cached in localStorage so pages have something to draw
+// before the first Firestore response arrives.
+function localDateString(ms) {
+  const d = ms ? new Date(ms) : new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 
-  _getDeletedIds() {
-    try {
-      const stored = localStorage.getItem(this._deletedKey);
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      return [];
-    }
-  },
+// "Just now", "5 minutes ago", "2 hours ago", "3 days ago", then the date.
+function timeAgo(ms) {
+  if (!ms) return 'Just now';
+  const seconds = Math.max(0, (Date.now() - ms) / 1000);
+  const plural = (n, unit) => n + ' ' + unit + (n === 1 ? '' : 's') + ' ago';
+  if (seconds < 60) return 'Just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return plural(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return plural(hours, 'hour');
+  const days = Math.floor(hours / 24);
+  if (days < 7) return plural(days, 'day');
+  return localDateString(ms);
+}
 
-  _addDeletedId(id) {
-    const deleted = this._getDeletedIds();
-    const strId = String(id);
-    if (!deleted.includes(strId)) {
-      deleted.push(strId);
+function createHubStore({ collectionName, cacheKey, updatedEvent, errorEvent, mapDoc }) {
+  return {
+    _items: null,
+    _unsubscribe: null,
+    _started: false,
+
+    _readCache() {
       try {
-        localStorage.setItem(this._deletedKey, JSON.stringify(deleted));
-      } catch (e) {}
-    }
-  },
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+        return Array.isArray(cached) ? cached : [];
+      } catch (e) {
+        return [];
+      }
+    },
 
-  getAll() {
-    const deletedIds = this._getDeletedIds();
-    const stored = localStorage.getItem(this._key);
-    if (stored !== null) {
-      try {
-        let parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed.filter(item => !deletedIds.includes(String(item.id)));
-          if (filtered.length !== parsed.length) {
-            this.save(filtered);
+    // Start listening once the staff member is signed in. Safe to call on every page.
+    startSync() {
+      if (this._started) return;
+      this._started = true;
+
+      onAuthStateChanged(auth, (user) => {
+        if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
+        if (!user) return;
+
+        this._unsubscribe = onSnapshot(
+          collection(db, collectionName),
+          (snapshot) => {
+            this._items = snapshot.docs.map((snapshotDoc) => {
+              const data = snapshotDoc.data({ serverTimestamps: 'estimate' });
+              const createdMs = data.createdAt && data.createdAt.toMillis ? data.createdAt.toMillis() : 0;
+              return mapDoc(snapshotDoc.id, data, createdMs);
+            });
+            try { localStorage.setItem(cacheKey, JSON.stringify(this._items)); } catch (e) { }
+            window.dispatchEvent(new CustomEvent(updatedEvent));
+          },
+          (err) => {
+            console.error('[CampusNotify] Could not load ' + collectionName, err);
+            window.dispatchEvent(new CustomEvent(errorEvent, { detail: err }));
           }
-          return filtered;
-        }
-      } catch (e) {}
+        );
+      });
+    },
+
+    getAll() {
+      if (this._items === null) this._items = this._readCache();
+      return this._items;
+    },
+
+    getForHub() {
+      const user = Auth.getUser();
+      return this.getAll().filter(item => isHubVisible(item, user));
+    },
+
+    getById(id) {
+      return this.getAll().find(item => String(item.id) === String(id));
     }
-    return [];
-  },
+  };
+}
 
-  save(announcements) {
-    localStorage.setItem(this._key, JSON.stringify(announcements));
-  },
+// Everything published to the hub collections is "All Campus".
+const HUB_AUDIENCE = { target: 'all', department: 'all', year: 'all', targetDepartment: 'all', targetYear: 'all' };
 
-  add(announcement) {
-    const all = this.getAll();
-    announcement.id = Date.now();
-    announcement.date = new Date().toISOString().split('T')[0];
-    announcement.author = Auth.getUser()?.name || 'Admin';
+const AnnouncementsStore = createHubStore({
+  collectionName: 'announcement_hub',
+  cacheKey: 'campusnotify_announcement_hub_cache',
+  updatedEvent: 'announcements:updated',
+  errorEvent: 'announcements:error',
+  mapDoc: (id, data, createdMs) => ({
+    id,
+    title: data.title || '',
+    body: data.body || '',
+    category: data.category || 'Academic',
+    priority: data.priority || 'normal',
+    pinned: !!data.pinned,
+    author: data.author || 'Admin',
+    date: data.date || localDateString(createdMs),
+    createdMs,
+    ...HUB_AUDIENCE
+  })
+});
 
-    const target = announcement.target || 'all';
-    announcement.target = target;
-    announcement.department = target === 'students' ? (announcement.department || 'all') : 'all';
-    announcement.year = target === 'students' ? (announcement.year || 'all') : 'all';
-    announcement.targetDepartment = announcement.department;
-    announcement.targetYear = announcement.year;
-
-    all.unshift(announcement);
-    this.save(all);
-
-    // Automatically trigger notification with exact same audience targeting
-    try {
-      if (typeof NotificationsStore !== 'undefined') {
-        NotificationsStore.add({
-          type: announcement.priority === 'urgent' ? 'alert' : announcement.priority === 'important' ? 'warning' : 'info',
-          icon: '📢',
-          title: `New Announcement: ${announcement.title}`,
-          message: announcement.body ? (announcement.body.length > 120 ? announcement.body.substring(0, 117) + '...' : announcement.body) : 'A new campus announcement was posted.',
-          time: 'Just now',
-          target: announcement.target,
-          department: announcement.department,
-          year: announcement.year,
-          targetDepartment: announcement.department,
-          targetYear: announcement.year,
-          actionType: 'announcement',
-          actionId: announcement.id
-        });
-      }
-    } catch (e) {}
-
-    return announcement;
-  },
-
-  update(id, data) {
-    const all = this.getAll();
-    const idx = all.findIndex(a => String(a.id) === String(id));
-    if (idx !== -1) {
-      const target = data.target || all[idx].target || 'all';
-      const dept = target === 'students' ? (data.department || all[idx].department || 'all') : 'all';
-      const yr = target === 'students' ? (data.year || all[idx].year || 'all') : 'all';
-      all[idx] = {
-        ...all[idx],
-        ...data,
-        target,
-        department: dept,
-        year: yr,
-        targetDepartment: dept,
-        targetYear: yr
-      };
-      this.save(all);
-      return all[idx];
-    }
-    return null;
-  },
-
-  delete(id) {
-    if (id === null || id === undefined) return this.getAll();
-    this._addDeletedId(id);
-    const all = this.getAll().filter(a => String(a.id) !== String(id));
-    this.save(all);
-
-    // Clean up auxiliary stores
-    try {
-      if (typeof SavedStore !== 'undefined' && SavedStore.remove) {
-        SavedStore.remove('announcement', id);
-        SavedStore.remove('announcement', Number(id));
-      }
-      if (typeof ReminderStore !== 'undefined' && ReminderStore.remove) {
-        ReminderStore.remove('announcement', id);
-        ReminderStore.remove('announcement', Number(id));
-      }
-      if (typeof NotificationsStore !== 'undefined' && NotificationsStore._readMaster) {
-        const notifs = NotificationsStore._readMaster();
-        const cleaned = notifs.filter(n => !(n.actionType === 'announcement' && String(n.actionId) === String(id)));
-        if (cleaned.length !== notifs.length) {
-          NotificationsStore._saveMaster(cleaned);
-          NotificationsStore.updateSidebarBadge();
-        }
-      }
-    } catch (e) {}
-
-    return all;
-  },
-
-  getForHub() {
-    const user = Auth.getUser();
-    return this.getAll().filter(item => isHubVisible(item, user));
-  },
-
-  getById(id) {
-    return this.getAll().find(a => String(a.id) === String(id));
-  }
-};
-
-// ─── Events Store (With Admin CRUD) ───
-const EventsStore = {
-  _key: 'campusnotify_events',
-  _deletedKey: 'campusnotify_events_deleted',
-
-  _getDeletedIds() {
-    try {
-      const stored = localStorage.getItem(this._deletedKey);
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      return [];
-    }
-  },
-
-  _addDeletedId(id) {
-    const deleted = this._getDeletedIds();
-    const strId = String(id);
-    if (!deleted.includes(strId)) {
-      deleted.push(strId);
-      try {
-        localStorage.setItem(this._deletedKey, JSON.stringify(deleted));
-      } catch (e) {}
-    }
-  },
-
-  getAll() {
-    const deletedIds = this._getDeletedIds();
-    const stored = localStorage.getItem(this._key);
-    if (stored !== null) {
-      try {
-        let parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed.filter(item => !deletedIds.includes(String(item.id)));
-          if (filtered.length !== parsed.length) {
-            this.save(filtered);
-          }
-          return filtered;
-        }
-      } catch (e) {}
-    }
-    return [];
-  },
-
-  save(events) {
-    localStorage.setItem(this._key, JSON.stringify(events));
-  },
-
-  add(event) {
-    const all = this.getAll();
-    event.id = Date.now();
-    event.attendees = event.attendees || 0;
-
-    const target = event.target || 'all';
-    event.target = target;
-    event.department = target === 'students' ? (event.department || 'all') : 'all';
-    event.year = target === 'students' ? (event.year || 'all') : 'all';
-    event.targetDepartment = event.department;
-    event.targetYear = event.year;
-
-    all.unshift(event);
-    this.save(all);
-
-    // Automatically trigger notification with exact same audience targeting
-    try {
-      if (typeof NotificationsStore !== 'undefined') {
-        NotificationsStore.add({
-          type: 'info',
-          icon: '📅',
-          title: `New Event: ${event.title}`,
-          message: event.description ? (event.description.length > 120 ? event.description.substring(0, 117) + '...' : event.description) : `${event.date} at ${event.location}`,
-          time: 'Just now',
-          target: event.target,
-          department: event.department,
-          year: event.year,
-          targetDepartment: event.department,
-          targetYear: event.year,
-          actionType: 'event',
-          actionId: event.id
-        });
-      }
-    } catch (e) {}
-
-    return event;
-  },
-
-  update(id, data) {
-    const all = this.getAll();
-    const idx = all.findIndex(e => String(e.id) === String(id));
-    if (idx !== -1) {
-      const target = data.target || all[idx].target || 'all';
-      const dept = target === 'students' ? (data.department || all[idx].department || 'all') : 'all';
-      const yr = target === 'students' ? (data.year || all[idx].year || 'all') : 'all';
-      all[idx] = {
-        ...all[idx],
-        ...data,
-        target,
-        department: dept,
-        year: yr,
-        targetDepartment: dept,
-        targetYear: yr
-      };
-      this.save(all);
-      return all[idx];
-    }
-    return null;
-  },
-
-  delete(id) {
-    if (id === null || id === undefined) return this.getAll();
-    this._addDeletedId(id);
-    const all = this.getAll().filter(e => String(e.id) !== String(id));
-    this.save(all);
-
-    // Clean up auxiliary stores
-    try {
-      if (typeof SavedStore !== 'undefined' && SavedStore.remove) {
-        SavedStore.remove('event', id);
-        SavedStore.remove('event', Number(id));
-      }
-      if (typeof ReminderStore !== 'undefined' && ReminderStore.remove) {
-        ReminderStore.remove('event', id);
-        ReminderStore.remove('event', Number(id));
-      }
-      if (typeof EventInterestStore !== 'undefined' && EventInterestStore.getAll) {
-        const interests = EventInterestStore.getAll().filter(item => String(item.eventId) !== String(id));
-        EventInterestStore._save(interests);
-      }
-      if (typeof NotificationsStore !== 'undefined' && NotificationsStore._readMaster) {
-        const notifs = NotificationsStore._readMaster();
-        const cleaned = notifs.filter(n => !(n.actionType === 'event' && String(n.actionId) === String(id)));
-        if (cleaned.length !== notifs.length) {
-          NotificationsStore._saveMaster(cleaned);
-          NotificationsStore.updateSidebarBadge();
-        }
-      }
-    } catch (e) {}
-
-    return all;
-  },
-
-  getForHub() {
-    const user = Auth.getUser();
-    return this.getAll().filter(item => isHubVisible(item, user));
-  },
-
-  getById(id) {
-    return this.getAll().find(e => String(e.id) === String(id));
-  }
-};
+const EventsStore = createHubStore({
+  collectionName: 'event_hub',
+  cacheKey: 'campusnotify_event_hub_cache',
+  updatedEvent: 'events:updated',
+  errorEvent: 'events:error',
+  mapDoc: (id, data, createdMs) => ({
+    id,
+    title: data.title || '',
+    description: data.description || '',
+    category: data.category || 'Academic',
+    date: data.date || localDateString(createdMs),
+    time: data.time || '',
+    location: data.location || '',
+    author: data.author || 'Admin',
+    attendees: 0,
+    createdMs,
+    ...HUB_AUDIENCE
+  })
+});
 
 // ─── Notifications Store ───
+// Notifications come from Firestore (notification_hub). Which ones a staff member has read or
+// removed is kept per user in localStorage.
 const NotificationsStore = {
-  _masterKey: 'campusnotify_notifications',
-  _deletedKey: 'campusnotify_notifications_deleted',
+  _hub: createHubStore({
+    collectionName: 'notification_hub',
+    cacheKey: 'campusnotify_notification_hub_cache',
+    updatedEvent: 'notifications:updated',
+    errorEvent: 'notifications:error',
+    mapDoc: (id, data, createdMs) => ({
+      id,
+      type: data.type || 'info',
+      icon: data.icon || '📢',
+      title: data.title || 'Notification',
+      message: data.message || '',
+      category: data.category || 'Academic',
+      author: data.author || 'Admin',
+      createdMs,
+      actionType: null,
+      actionId: null,
+      ...HUB_AUDIENCE
+    })
+  }),
   _dismissedKeyPrefix: 'campusnotify_notif_dismissed_',
   _readKeyPrefix: 'campusnotify_notif_read_',
 
-  _getDeletedIds() {
-    try {
-      const stored = localStorage.getItem(this._deletedKey);
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      return [];
-    }
-  },
-
-  _addDeletedId(id) {
-    const deleted = this._getDeletedIds();
-    const strId = String(id);
-    if (!deleted.includes(strId)) {
-      deleted.push(strId);
-      try {
-        localStorage.setItem(this._deletedKey, JSON.stringify(deleted));
-      } catch (e) {}
-    }
+  startSync() {
+    this._hub.startSync();
   },
 
   _getDismissedIds() {
@@ -787,7 +618,7 @@ const NotificationsStore = {
     if (!user || !user.id) return;
     try {
       localStorage.setItem(this._dismissedKeyPrefix + user.id, JSON.stringify(ids));
-    } catch (e) {}
+    } catch (e) { }
   },
 
   _getReadIds() {
@@ -804,52 +635,25 @@ const NotificationsStore = {
     if (!user || !user.id) return;
     try {
       localStorage.setItem(this._readKeyPrefix + user.id, JSON.stringify(ids));
-    } catch (e) {}
-  },
-
-  _readMaster() {
-    const deletedIds = this._getDeletedIds();
-    try {
-      const stored = localStorage.getItem(this._masterKey);
-      if (stored !== null) {
-        let parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed.filter(item => !deletedIds.includes(String(item.id)));
-          if (filtered.length !== parsed.length) {
-            this._saveMaster(filtered);
-          }
-          return filtered;
-        }
-      }
-    } catch (e) {}
-    return [];
-  },
-
-  _saveMaster(list) {
-    try {
-      localStorage.setItem(this._masterKey, JSON.stringify(list));
-    } catch (e) {}
+    } catch (e) { }
   },
 
   getAll() {
     const user = Auth.getUser();
-    const master = this._readMaster();
-    const readIds = this._getReadIds();
-    const dismissedIds = this._getDismissedIds();
+    const readIds = this._getReadIds().map(String);
+    const dismissedIds = this._getDismissedIds().map(String);
 
-    const filtered = master.filter(item => {
-      if (dismissedIds.includes(String(item.id))) return false;
-      return isAudienceMatch(item, user);
-    });
-
-    return filtered.map(item => ({
-      ...item,
-      read: readIds.includes(item.id) || readIds.includes(String(item.id)) || !!item.read
-    }));
+    return this._hub.getAll()
+      .filter(item => !dismissedIds.includes(String(item.id)) && isAudienceMatch(item, user))
+      .map(item => ({
+        ...item,
+        time: timeAgo(item.createdMs),
+        read: readIds.includes(String(item.id))
+      }));
   },
 
   getById(id) {
-    return this._readMaster().find(n => String(n.id) === String(id));
+    return this._hub.getById(id);
   },
 
   getForHub() {
@@ -862,93 +666,41 @@ const NotificationsStore = {
   },
 
   markAsRead(id) {
-    const readIds = this._getReadIds();
-    if (!readIds.includes(id) && !readIds.includes(String(id))) {
-      readIds.push(id);
+    const readIds = this._getReadIds().map(String);
+    if (!readIds.includes(String(id))) {
+      readIds.push(String(id));
       this._saveReadIds(readIds);
     }
     return this.getAll();
   },
 
   markAllAsRead() {
-    const all = this.getAll();
-    const readIds = this._getReadIds();
-    all.forEach(n => {
-      if (!readIds.includes(n.id) && !readIds.includes(String(n.id))) readIds.push(n.id);
+    const readIds = this._getReadIds().map(String);
+    this.getAll().forEach(n => {
+      if (!readIds.includes(String(n.id))) readIds.push(String(n.id));
     });
     this._saveReadIds(readIds);
     return this.getAll();
   },
 
-  add(notif) {
-    const target = notif.target || 'all';
-    const dept = target === 'students' ? (notif.department || 'all') : 'all';
-    const yr = target === 'students' ? (notif.year || 'all') : 'all';
-
-    const item = {
-      id: Date.now() + Math.floor(Math.random() * 1000),
-      type: notif.type || 'info',
-      icon: notif.icon || '📢',
-      title: notif.title || 'Notification',
-      message: notif.message || '',
-      time: notif.time || 'Just now',
-      read: false,
-      target,
-      department: dept,
-      year: yr,
-      targetDepartment: dept,
-      targetYear: yr,
-      studentIds: Array.isArray(notif.studentIds) ? notif.studentIds : [],
-      actionType: notif.actionType || null,
-      actionId: notif.actionId || null
-    };
-
-    const master = this._readMaster();
-    master.unshift(item);
-    this._saveMaster(master);
-    this.updateSidebarBadge();
-    return item;
-  },
-
-  update(id, data) {
-    const master = this._readMaster();
-    const idx = master.findIndex(n => String(n.id) === String(id));
-    if (idx !== -1) {
-      master[idx] = { ...master[idx], ...data };
-      this._saveMaster(master);
-      this.updateSidebarBadge();
-      return master[idx];
-    }
-    return null;
-  },
-
+  // A staff member removes a notification from their own list only.
   dismissForUser(id) {
-    const dismissed = this._getDismissedIds();
-    const strId = String(id);
-    if (!dismissed.includes(strId)) {
-      dismissed.push(strId);
+    const dismissed = this._getDismissedIds().map(String);
+    if (!dismissed.includes(String(id))) {
+      dismissed.push(String(id));
       this._saveDismissedIds(dismissed);
     }
   },
 
   delete(id) {
     if (id === null || id === undefined) return this.getAll();
-    const user = Auth.getUser();
-    if (user && user.role === 'admin') {
-      this._addDeletedId(id);
-      const master = this._readMaster().filter(n => String(n.id) !== String(id));
-      this._saveMaster(master);
-    } else {
-      this.dismissForUser(id);
-    }
+    this.dismissForUser(id);
     this.updateSidebarBadge();
     return this.getAll();
   },
 
   updateSidebarBadge() {
-    // Students see the badge on Campus Hub (hub-visible unread only);
-    // admins see it on Admin Hub (all unread).
-       const navTarget = document.getElementById('nav-campus-hub');
+    const navTarget = document.getElementById('nav-campus-hub');
     if (!navTarget) return;
 
     const unread = this.getForHub().filter(n => !n.read).length;
@@ -1211,9 +963,17 @@ function renderSidebar(activePage) {
             <span class="nav-icon">📊</span>
             Dashboard
           </a>
+          <a href="campus-hub.html" class="nav-item ${activePage === 'campus-hub' ? 'active' : ''}" id="nav-campus-hub">
+            <span class="nav-icon">🏫</span>
+            Campus Hub
+          </a>
           <a href="staff-hub.html" class="nav-item ${activePage === 'staff-hub' ? 'active' : ''}" id="nav-staff-hub">
             <span class="nav-icon">🧑‍🏫</span>
             Staff Hub
+          </a>
+          <a href="games.html" class="nav-item ${activePage === 'games' ? 'active' : ''}" id="nav-games">
+            <span class="nav-icon">🎮</span>
+            Games
           </a>
         </div>
 
@@ -1334,6 +1094,12 @@ function initPage(activePage) {
 
   // Enforce Firebase session and staff_account document verification
   Auth.initSessionGuard();
+
+  // Keep announcements, events and notifications in sync with Firestore
+  AnnouncementsStore.startSync();
+  EventsStore.startSync();
+  NotificationsStore.startSync();
+  window.addEventListener('notifications:updated', () => NotificationsStore.updateSidebarBadge());
 
   return true;
 }
@@ -2024,6 +1790,9 @@ if (typeof window !== 'undefined') {
   window.UI = UI;
   window.AnnouncementsStore = AnnouncementsStore;
   window.EventsStore = EventsStore;
+  window.NotificationsStore = NotificationsStore;
+  window.localDateString = localDateString;
+  window.timeAgo = timeAgo;
   window.initPage = initPage;
   window.AppearancePrefs = AppearancePrefs;
   window.renderSidebar = renderSidebar;
