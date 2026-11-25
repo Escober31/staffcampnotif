@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description"
+    content="CampusNotify Staff Hub — Send announcements, events, and notifications to your students.">
+  <title>Staff Hub — CampusNotify</title>
+  <link rel="stylesheet" href="styles.css">
+
+  <style>
+    /* Staff Hub — form + modal styles (built on the same design tokens as styles.css) */
+    .ah-header-side { display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-md, 16px); }
+    .ah-error { display: none; margin-bottom: var(--space-md, 16px); padding: 12px 16px; border-radius: var(--radius-md, 12px); font-size: .9rem;
+      color: #fca5a5; background: rgba(239, 68, 68, .1); border: 1px solid rgba(239, 68, 68, .35); }
+
+    /* Modal layout: wider, with fixed header/footer and a scrolling body */
+    .modal.ah-modal { max-width: 750px; display: flex; flex-direction: column; overflow: hidden; }
+    .ah-modal .modal-header { flex-shrink: 0; }
+    .ah-modal .modal-header h2 { margin: 0; font-size: 1.5rem; }
+    .ah-modal .modal-body { flex: 1; overflow-y: auto; }
+    .ah-modal .modal-footer { flex-shrink: 0; }
+
+    /* Form helpers (inputs themselves use styles.css: .form-input / .form-select / .form-textarea) */
+    .ah-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
+    .ah-muted { font-weight: 400; opacity: .7; margin-left: 4px; }
+    .form-textarea { min-height: 150px; resize: vertical; line-height: 1.6; }
+    .form-select option { background: var(--bg-surface); color: var(--text-primary); }
+    .form-select:disabled { opacity: .45; cursor: not-allowed; }
+    .form-group.is-disabled .form-label { opacity: .5; }
+    .form-input.invalid, .form-textarea.invalid { border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .2); }
+    input[type="date"].form-input, input[type="time"].form-input { color-scheme: dark; }
+    body.light-theme input[type="date"].form-input, body.light-theme input[type="time"].form-input { color-scheme: light; }
+
+    /* Sent-items list */
+    .ah-actions-danger:hover { color: #ef4444; border-color: rgba(239, 68, 68, .5); }
+    .ah-audience { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--text-muted); }
+
+
+    /* Poll form */
+    .form-textarea.pl-question { min-height: 84px; }
+    .pl-counter { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: .8rem; color: var(--text-muted); }
+    .pl-choices { display: flex; flex-direction: column; gap: 10px; }
+    .pl-choice { display: flex; align-items: center; gap: 10px; }
+    .pl-choice.dragging { opacity: .45; }
+    .pl-grip { cursor: grab; user-select: none; color: var(--text-muted); font-size: 1.1rem; line-height: 1; padding: 6px 2px; letter-spacing: -2px; }
+    .pl-grip:active { cursor: grabbing; }
+    .pl-num { width: 22px; flex-shrink: 0; text-align: center; font-size: .85rem; font-weight: 600; color: var(--text-muted); }
+    .pl-choice .form-input { flex: 1; min-width: 0; }
+    .pl-remove:disabled { opacity: .3; cursor: not-allowed; }
+    .pl-remove:not(:disabled):hover { color: #ef4444; }
+    .pl-add { margin-top: 10px; padding: 9px 16px; border-radius: var(--radius-md, 12px); font: inherit; font-size: .9rem; font-weight: 600; cursor: pointer;
+      color: #8b5cf6; background: transparent; border: 1px dashed rgba(139, 92, 246, .6); }
+    .pl-add:hover:not(:disabled) { background: rgba(139, 92, 246, .1); }
+    .pl-add:disabled { opacity: .4; cursor: not-allowed; }
+    .pl-pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 var(--space-md, 16px); }
+    .pl-pill { padding: 5px 12px; border-radius: 999px; font-size: .82rem; color: var(--text-secondary, var(--text-primary)); border: 1px solid rgba(148, 163, 184, .3); }
+    .type-poll { color: #a78bfa; }
+    .pl-result { margin-bottom: 12px; }
+    .pl-result-head { display: flex; justify-content: space-between; gap: 12px; font-size: .88rem; margin-bottom: 5px; }
+    .pl-result-head span:last-child { color: var(--text-muted); white-space: nowrap; }
+    .pl-bar-track { height: 8px; border-radius: 999px; background: rgba(148, 163, 184, .2); overflow: hidden; }
+    .pl-bar { height: 100%; border-radius: 999px; background: #8b5cf6; }
+    .pl-voter-group { margin-bottom: var(--space-lg, 24px); }
+    .pl-voter-group h4 { margin: 0 0 8px; font-size: .95rem; display: flex; justify-content: space-between; gap: 12px; }
+    .pl-voter-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(148, 163, 184, .2); font-size: .88rem; }
+    .pl-voter-row small { display: block; color: var(--text-muted); }
+    .pl-voter-row time { color: var(--text-muted); font-size: .8rem; white-space: nowrap; }
+
+    @media (max-width: 640px) {
+      .ah-header-side { align-items: stretch; width: 100%; }
+      .ah-row { grid-template-columns: 1fr; gap: 0; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app-layout">
+    <div id="app-sidebar"></div>
+
+    <main class="main-content">
+      <!-- Page Header -->
+      <div class="page-header animate-fade-in">
+        <div class="page-header-row">
+          <div>
+            <h1>🧑‍🏫 <span class="text-gradient">Staff Hub</span></h1>
+            <p class="page-subtitle">Send announcements, events, and notifications to the students in your department.</p>
+          </div>
+          <div class="ah-header-side">
+            <div class="search-bar">
+              <span class="search-icon">🔍</span>
+              <input type="text" placeholder="Search sent updates..." id="hubSearch">
+            </div>
+            <button class="btn btn-primary" id="btnCreate" style="white-space:nowrap;">✚ New Announcement</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="hub-filters animate-fade-in">
+        <div class="hub-type-filters" id="typeFilters">
+          <button class="hub-filter-chip active" data-type="announcement">📢 Announcements</button>
+          <button class="hub-filter-chip" data-type="event">📅 Events</button>
+          <button class="hub-filter-chip" data-type="notification">🔔 Notifications</button>
+        </div>
+        <div class="hub-category-filters" id="categoryFilters">
+          <button class="hub-cat-chip active" data-cat="all">All</button>
+          <button class="hub-cat-chip" data-cat="Academic">Academic</button>
+          <button class="hub-cat-chip" data-cat="Student Life">Student Life</button>
+          <button class="hub-cat-chip" data-cat="Facilities">Facilities</button>
+          <button class="hub-cat-chip" data-cat="Sports">Sports</button>
+          <button class="hub-cat-chip" data-cat="Career">Career</button>
+        </div>
+      </div>
+
+      <!-- Sent items -->
+      <div id="hubError" class="ah-error" role="alert"></div>
+      <div id="hubFeed" class="hub-feed stagger"></div>
+      <div id="hubEmpty" class="empty-state" style="display:none;">
+        <div class="empty-icon">📭</div>
+        <h3>Nothing sent yet</h3>
+        <p>Use the buttons above to publish your first announcement, event, or notification.</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modals are built by script below -->
+  <div id="modalHost"></div>
+  <div id="toast-container" class="toast-container"></div>
+
+  <script type="module" src="app.js"></script>
+  <script type="module">
+    import { auth, db } from './firebase-config.js';
+    import { onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+    import {
+      collection, doc, addDoc, deleteDoc, onSnapshot, getDocs, query, where, serverTimestamp
+    } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+
+    (function () {
+      'use strict';
+
+      // ─── Options ───
+      const CATEGORIES = [
+        { value: 'Academic', label: 'Academic' },
+        { value: 'Student Life', label: 'Student Life' },
+        { value: 'Facilities', label: 'Facilities' },
+        { value: 'Sports', label: 'Sports' },
+        { value: 'Career', label: 'Career' }
+      ];
+      const PRIORITIES = [
+        { value: 'normal', label: '🔵 General' },
+        { value: 'important', label: '🟡 Important' },
+        { value: 'urgent', label: '🔴 Urgent' }
+      ];
+      const NOTIF_TYPES = [
+        { value: 'info', label: 'ℹ️ Information', icon: '📢' },
+        { value: 'warning', label: '⚠️ Warning / Reminder', icon: '⚠️' },
+        { value: 'alert', label: '🔴 Urgent Alert', icon: '🔴' },
+        { value: 'success', label: '✅ Success / Update', icon: '✅' }
+      ];
+      const NOTIF_ICONS = ['📢', '🔔', '⚠️', '🔴', '✅', '📅', '🎉', '💡', '🏫', '💻'];
+      const DEPARTMENTS = [
+        { value: 'Computer Science', label: 'Computer Science' },
+        { value: 'Engineering', label: 'Engineering' },
+        { value: 'Business', label: 'Business' },
+        { value: 'Art and Science', label: 'Art and Science' },
+        { value: 'Medicine', label: 'Medicine' },
+        { value: 'Law', label: 'Law' }
+      ];
+      const YEARS = [
+        { value: 'all', label: 'All Year Level' },
+        { value: '1st Year', label: '1st Year' },
+        { value: '2nd Year', label: '2nd Year' },
+        { value: '3rd Year', label: '3rd Year' },
+        { value: '4th Year', label: '4th Year' },
+        { value: 'Graduated', label: 'Graduated' }
+      ];
+      const MAX_PICK = 20;
+
+      // ─── State ───
+      let typeFilter = 'announcement';
+      let categoryFilter = 'all';
+      let searchTerm = '';
+
+      // ─── Helpers ───
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) => (s === null || s === undefined ? '' : String(s)).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const options = (list) => list.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+      const pad = (n) => String(n).padStart(2, '0');
+      const isoDay = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const today = () => isoDay(new Date());
+
+      function to12h(time24) {
+        const [h, m] = time24.split(':').map(Number);
+        return `${(h % 12) || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+      }
+
+      function currentAuthor() {
+        try {
+          const user = Auth.getUser();
+          return (user && (user.name || user.fullName || user.displayName)) || 'Staff';
+        } catch (e) {
+          return 'Staff';
+        }
+      }
+
+      // Staff can only send inside their own department
+      function myDept() {
+        try { return (Auth.getUser() || {}).department || ''; } catch (e) { return ''; }
+      }
+
+      function audienceLabel(item) {
+        const dept = DEPARTMENTS.find(d => d.value.toLowerCase() === String(item.target1 || '').toLowerCase());
+        const n = Array.isArray(item.recipientUids) ? item.recipientUids.length : 0;
+        const who = n ? n + ' chosen student' + (n > 1 ? 's' : '') : 'All students';
+        return `<span class="ah-audience">${esc('🎓 ' + who + ' · ' + (dept ? dept.label : (item.target1 || '')) + ' · ' + (item.target2 || 'All Year Level'))}</span>`;
+      }
+
+      // ─── Modals ───
+      // Staff audience: the department is fixed, the year is chosen, and the recipients are
+      // either every student in that department and year or up to 20 chosen students.
+      function audienceFields(p) {
+        return `
+          <div class="ah-row">
+            <div class="form-group">
+              <label class="form-label" for="${p}Dept">Department</label>
+              <select class="form-select" id="${p}Dept" disabled><option>${esc(myDept() || 'No department on your account')}</option></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="${p}Year">Academic Year</label>
+              <select class="form-select" id="${p}Year">${options(YEARS)}</select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="${p}Recipients">Recipients</label>
+            <select class="form-select" id="${p}Recipients">
+              <option value="all">👥 All Students</option>
+              <option value="choose">☑️ Choose Students (up to ${MAX_PICK})</option>
+            </select>
+            <div class="text-muted" style="font-size:.8rem; margin-top:6px;">Only students in your department can receive this. <strong>All Students</strong> reaches the chosen year level; <strong>Choose Students</strong> reaches only the students you tick.</div>
+          </div>
+          <div class="form-group" id="${p}PickBox" style="display:none;">
+            <label class="form-label">Students <span class="ah-muted" id="${p}PickCount"></span></label>
+            <div id="${p}PickList" style="max-height:190px; overflow:auto; border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:8px;"></div>
+          </div>`;
+      }
+
+      function modal(id, title, body, submitLabel) {
+        return `
+          <div class="modal-overlay" id="${id}">
+            <div class="modal ah-modal" role="dialog" aria-modal="true" aria-labelledby="${id}Title">
+              <div class="modal-header">
+                <h2 id="${id}Title">${title}</h2>
+                <button class="btn btn-ghost btn-icon sm" aria-label="Close" data-close="${id}">✕</button>
+              </div>
+              <div class="modal-body">${body}</div>
+              <div class="modal-footer">
+                <button class="btn btn-secondary" data-close="${id}">Cancel</button>
+                <button class="btn btn-primary" data-submit="${id}">${submitLabel}</button>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      const FORMS = {
+        announcement: {
+          modalId: 'announcementModal', prefix: 'ann',
+          html: `
+            <div class="form-group">
+              <label class="form-label" for="annTitle">Title</label>
+              <input class="form-input" id="annTitle" type="text" placeholder="Enter announcement title" maxlength="120">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="annBody">Content</label>
+              <textarea class="form-textarea" id="annBody" placeholder="Write your announcement..."></textarea>
+            </div>
+            <div class="ah-row">
+              <div class="form-group">
+                <label class="form-label" for="annCategory">Category</label>
+                <select class="form-select" id="annCategory">${options(CATEGORIES)}</select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="annPriority">Priority</label>
+                <select class="form-select" id="annPriority">${options(PRIORITIES)}</select>
+              </div>
+            </div>
+            ${audienceFields('ann')}`
+        },
+        event: {
+          modalId: 'eventModal', prefix: 'ev',
+          html: `
+            <div class="form-group">
+              <label class="form-label" for="evTitle">Title</label>
+              <input class="form-input" id="evTitle" type="text" placeholder="Enter event title" maxlength="120">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="evDesc">Description</label>
+              <textarea class="form-textarea" id="evDesc" placeholder="Describe the event..."></textarea>
+            </div>
+            <div class="ah-row">
+              <div class="form-group">
+                <label class="form-label" for="evDate">Date</label>
+                <input class="form-input" id="evDate" type="date">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="evTime">Time</label>
+                <input class="form-input" id="evTime" type="time">
+              </div>
+            </div>
+            <div class="ah-row">
+              <div class="form-group">
+                <label class="form-label" for="evCategory">Category</label>
+                <select class="form-select" id="evCategory">${options(CATEGORIES)}</select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="evLocation">Location</label>
+                <input class="form-input" id="evLocation" type="text" placeholder="e.g. Main Auditorium">
+              </div>
+            </div>
+            ${audienceFields('ev')}`
+        },
+        notification: {
+          modalId: 'notificationModal', prefix: 'nt',
+          html: `
+            <div class="form-group">
+              <label class="form-label" for="ntTitle">Title</label>
+              <input class="form-input" id="ntTitle" type="text" placeholder="Enter notification title" maxlength="100">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="ntMessage">Message</label>
+              <textarea class="form-textarea" id="ntMessage" placeholder="Write your notification..." style="min-height:110px;" maxlength="1000"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="ntCategory">Category</label>
+              <select class="form-select" id="ntCategory">${options(CATEGORIES)}</select>
+            </div>
+            <div class="ah-row">
+              <div class="form-group">
+                <label class="form-label" for="ntType">Type</label>
+                <select class="form-select" id="ntType">${options(NOTIF_TYPES)}</select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="ntIcon">Icon</label>
+                <select class="form-select" id="ntIcon">${NOTIF_ICONS.map(i => `<option value="${i}">${i}</option>`).join('')}</select>
+              </div>
+            </div>
+            ${audienceFields('nt')}`
+        }
+      };
+
+      const TITLES = { announcement: ['Create Announcement', 'Publish'], event: ['Create Event', 'Create Event'], notification: ['Send Notification', 'Send'] };
+
+      function buildModals() {
+        $('modalHost').innerHTML = Object.keys(FORMS).map(kind =>
+          modal(FORMS[kind].modalId, TITLES[kind][0], FORMS[kind].html, TITLES[kind][1])
+        ).join('');
+
+        Object.values(FORMS).forEach(f => {
+          $(f.prefix + 'Recipients').addEventListener('change', () => syncRecipients(f.prefix));
+          $(f.prefix + 'Year').addEventListener('change', () => {
+            if ($(f.prefix + 'Recipients').value === 'choose') renderPickList(f.prefix);
+          });
+        });
+        $('ntType').addEventListener('change', () => {
+          const t = NOTIF_TYPES.find(x => x.value === $('ntType').value);
+          if (t) $('ntIcon').value = t.icon;
+        });
+        $('modalHost').addEventListener('input', (e) => e.target.classList.remove('invalid'));
+      }
+
+      // ─── Choose Students ───
+      let studentCache = null;
+      async function loadStudents() {
+        if (studentCache) return studentCache;
+        const snap = await getDocs(query(collection(db, 'student_account'), where('department', '==', myDept())));
+        studentCache = snap.docs.map((d) => {
+          const x = d.data();
+          return { uid: d.id, name: x.fullName || x.name || x.email || d.id, year: x.year || '' };
+        }).sort((a, b) => a.name.localeCompare(b.name));
+        return studentCache;
+      }
+
+      function checkedIds(p) {
+        return [...document.querySelectorAll(`input[data-pick="${p}"]:checked`)].map(i => i.value);
+      }
+
+      function updatePickCount(p) {
+        $(p + 'PickCount').textContent = `(${checkedIds(p).length}/${MAX_PICK} selected)`;
+      }
+
+      async function renderPickList(p) {
+        const box = $(p + 'PickList');
+        box.innerHTML = '<div class="text-muted" style="font-size:.85rem;">Loading students…</div>';
+        let students;
+        try {
+          students = await loadStudents();
+        } catch (err) {
+          console.error('Staff Hub: could not load students', err);
+          box.innerHTML = '<div class="text-muted" style="font-size:.85rem;">Couldn’t load your students. Publish the staff Firestore rules, then try again.</div>';
+          return;
+        }
+        const year = $(p + 'Year').value;
+        const list = students.filter(s => year === 'all' || s.year === year);
+        box.innerHTML = list.length
+          ? list.map(s => `<label class="form-checkbox-group" style="display:flex; gap:8px; padding:4px 2px;"><input type="checkbox" data-pick="${p}" value="${esc(s.uid)}"> ${esc(s.name)} <span class="ah-muted">${esc(s.year)}</span></label>`).join('')
+          : '<div class="text-muted" style="font-size:.85rem;">No students found for this department and year.</div>';
+        updatePickCount(p);
+      }
+
+      function syncRecipients(p) {
+        const choose = $(p + 'Recipients').value === 'choose';
+        $(p + 'PickBox').style.display = choose ? 'block' : 'none';
+        if (choose) renderPickList(p);
+      }
+
+      function openForm(kind) {
+        const f = FORMS[kind];
+        if (!f) return;
+        const el = $(f.modalId);
+        el.querySelectorAll('input[type="text"], input[type="date"], input[type="time"], textarea').forEach(i => { i.value = ''; i.classList.remove('invalid'); });
+        el.querySelectorAll('select').forEach(i => { i.selectedIndex = 0; });
+        if (kind === 'event') $('evDate').value = today();
+        if (kind === 'notification') $('ntIcon').value = NOTIF_TYPES[0].icon;
+        syncRecipients(f.prefix);
+        el.querySelector('.modal-body').scrollTop = 0;
+        UI.openModal(f.modalId);
+        setTimeout(() => { const first = el.querySelector('.form-input, .form-textarea'); if (first) first.focus(); }, 150);
+      }
+
+      function validate(ids) {
+        const missing = ids.filter(id => !$(id).value.trim());
+        missing.forEach(id => $(id).classList.add('invalid'));
+        if (missing.length) {
+          $(missing[0]).focus();
+          UI.toast('Please fill in the highlighted fields.', 'warning');
+        }
+        return missing.length === 0;
+      }
+
+      // ─── Firebase: staff can only see what they sent (announcement_SS, event_SS, notification_SS) ───
+      function toHubDoc(snapshotDoc, collectionName) {
+        const data = snapshotDoc.data({ serverTimestamps: 'estimate' });
+        const createdMs = data.createdAt && data.createdAt.toMillis ? data.createdAt.toMillis() : 0;
+        return {
+          ...data,
+          id: snapshotDoc.id,
+          _collection: collectionName,
+          createdMs,
+          date: data.date || (createdMs ? isoDay(new Date(createdMs)) : today())
+        };
+      }
+
+      const HUB = {
+        announcement: { collection: 'announcement_SS', items: [], error: null, ready: false, unsubscribe: null },
+        event: { collection: 'event_SS', items: [], error: null, ready: false, unsubscribe: null },
+        notification: { collection: 'notification_SS', items: [], error: null, ready: false, unsubscribe: null }
+      };
+
+      // Wait for the signed-in staff member before listening, otherwise Firestore rejects the request.
+      function startHubSync() {
+        onAuthStateChanged(auth, (user) => {
+          Object.values(HUB).forEach((hub) => {
+            if (hub.unsubscribe) { hub.unsubscribe(); hub.unsubscribe = null; }
+            if (!user) return;
+            const q = query(collection(db, hub.collection), where('authorId', '==', user.uid));
+            hub.unsubscribe = onSnapshot(q, (snapshot) => {
+              hub.items = snapshot.docs.map((d) => toHubDoc(d, hub.collection));
+              hub.error = null;
+              hub.ready = true;
+              renderFeed();
+            }, (err) => {
+              console.error('Staff Hub: ' + hub.collection + ' listener failed', err);
+              hub.items = [];
+              hub.error = err;
+              hub.ready = true;
+              renderFeed();
+            });
+          });
+        });
+      }
+
+      const LABELS = { announcement: 'Announcements', event: 'Events', notification: 'Notifications' };
+      const CREATE_LABELS = { announcement: '✚ New Announcement', event: '✚ New Event', notification: '✚ New Notification' };
+
+      // ─── Submit ───
+      let sending = false;
+
+      // Wraps send(): blocks double-clicks, shows progress on the button, and reports any error
+      async function submit(kind) {
+        if (sending) return;
+        sending = true;
+        const button = document.querySelector(`[data-submit="${FORMS[kind].modalId}"]`);
+        const label = button ? button.textContent : '';
+        if (button) { button.disabled = true; button.textContent = 'Sending…'; }
+        try {
+          await send(kind);
+        } catch (err) {
+          console.error('Staff Hub: unexpected error while sending', err);
+          UI.toast('Something went wrong: ' + ((err && err.message) || err), 'error');
+        } finally {
+          sending = false;
+          if (button) { button.disabled = false; button.textContent = label; }
+        }
+      }
+
+      function withTimeout(promise, ms) {
+        let timer;
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const err = new Error('Firebase did not respond after ' + (ms / 1000) + ' seconds. Check your internet connection, then look at the list before trying again, because it may still arrive.');
+            err.code = 'timeout';
+            reject(err);
+          }, ms);
+        });
+        return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+      }
+
+      function requireReady() {
+        if (!auth.currentUser) {
+          UI.toast('You are not signed in. Please log in again.', 'error');
+          return false;
+        }
+        if (!myDept()) {
+          UI.toast('Your account has no department, so you can’t send to students yet.', 'warning');
+          return false;
+        }
+        return true;
+      }
+
+      // Every staff post is a Specific Students post: target1 = department, target2 = year level.
+      // recipientUids is empty for "All Students" and holds up to 20 student ids for "Choose Students".
+      function audienceTarget(p) {
+        const dept = myDept();
+        const year = $(p + 'Year').value;
+        const target2 = year === 'all' ? 'All Year Level' : year;
+        const ids = $(p + 'Recipients').value === 'choose' ? checkedIds(p) : [];
+        if ($(p + 'Recipients').value === 'choose' && !ids.length) {
+          UI.toast('Choose at least one student, or switch to All Students.', 'warning');
+          return null;
+        }
+        return {
+          fields: {
+            author: currentAuthor(),
+            authorId: auth.currentUser.uid,
+            createdAt: serverTimestamp(),
+            target1: dept.toLowerCase(),
+            target2,
+            senderRole: 'staff',
+            recipientUids: ids
+          },
+          sentTo: ids.length ? ids.length + ' chosen student' + (ids.length > 1 ? 's' : '') : 'all ' + dept + ' students · ' + target2
+        };
+      }
+
+      async function send(kind) {
+        if (!requireReady()) return;
+        let payload;
+        let aud;
+        if (kind === 'announcement') {
+          if (!validate(['annTitle', 'annBody'])) return;
+          if (!(aud = audienceTarget('ann'))) return;
+          payload = {
+            title: $('annTitle').value.trim(),
+            body: $('annBody').value.trim(),
+            category: $('annCategory').value,
+            priority: $('annPriority').value,
+            pinned: false,
+            date: today(),
+            ...aud.fields
+          };
+        } else if (kind === 'event') {
+          if (!validate(['evTitle', 'evDesc', 'evDate', 'evTime', 'evLocation'])) return;
+          if (!(aud = audienceTarget('ev'))) return;
+          payload = {
+            title: $('evTitle').value.trim(),
+            description: $('evDesc').value.trim(),
+            category: $('evCategory').value,
+            date: $('evDate').value,
+            time: to12h($('evTime').value),
+            location: $('evLocation').value.trim(),
+            ...aud.fields
+          };
+        } else {
+          if (!validate(['ntTitle', 'ntMessage'])) return;
+          if (!(aud = audienceTarget('nt'))) return;
+          payload = {
+            title: $('ntTitle').value.trim(),
+            message: $('ntMessage').value.trim(),
+            category: $('ntCategory').value,
+            type: $('ntType').value,
+            icon: $('ntIcon').value,
+            ...aud.fields
+          };
+        }
+
+        try {
+          await withTimeout(addDoc(collection(db, HUB[kind].collection), payload), 15000);
+        } catch (err) {
+          console.error(err);
+          const denied = err && err.code === 'permission-denied';
+          UI.toast(denied
+            ? 'Firebase denied the request. Publish the staff Firestore rules, then try again.'
+            : 'Couldn’t send it' + (err && err.code ? ' (' + err.code + ')' : '') + ': ' + ((err && err.message) || 'see the browser console.'), 'error');
+          return;
+        }
+
+        UI.toast(({ announcement: 'Announcement published', event: 'Event created', notification: 'Notification sent' }[kind]) + '! Sent to ' + aud.sentTo + '.', 'success');
+        UI.closeModal(FORMS[kind].modalId);
+        renderFeed();
+      }
+
+      // ─── Feed (only what this staff member sent) ───
+      function buildFeed() {
+        const dayMs = (d) => new Date((d || today()) + 'T00:00:00').getTime();
+        return [
+          ...HUB.announcement.items.map(a => ({ type: 'announcement', data: a, category: a.category, rank: a.pinned ? 0 : 1, sort: a.createdMs || dayMs(a.date) })),
+          ...HUB.event.items.map(e => ({ type: 'event', data: e, category: e.category, rank: 1, sort: dayMs(e.date) })),
+          ...HUB.notification.items.map(n => ({ type: 'notification', data: n, category: n.category, rank: 1, sort: n.createdMs || dayMs(n.date) }))
+        ].sort((a, b) => a.rank - b.rank || b.sort - a.sort);
+      }
+
+      function applyFilters(feed) {
+        return feed.filter(item => {
+          if (item.type !== typeFilter) return false;
+          if (categoryFilter !== 'all' && item.category !== categoryFilter) return false;
+          if (!searchTerm) return true;
+          const d = item.data;
+          return [d.title, d.body, d.description, d.message, d.category, d.author, d.location]
+            .some(v => v && String(v).toLowerCase().includes(searchTerm));
+        });
+      }
+
+      function renderFeed() {
+        const failed = [];
+        Object.entries(HUB).forEach(([type, hub]) => {
+          if (!hub.error) return;
+          failed.push(hub.error.code === 'permission-denied'
+            ? LABELS[type] + ' (Firebase denied access — publish the staff Firestore rules)'
+            : LABELS[type]);
+        });
+        const banner = $('hubError');
+        banner.style.display = failed.length ? 'block' : 'none';
+        banner.textContent = failed.length ? `Couldn’t load ${failed.join(', ')}. Open the browser console (F12) for details.` : '';
+
+        const items = applyFilters(buildFeed());
+        const container = $('hubFeed');
+        const empty = $('hubEmpty');
+
+        if (!items.length && !Object.values(HUB).every(hub => hub.ready)) {
+          container.innerHTML = '';
+          empty.innerHTML = '<div class="empty-icon">⏳</div><h3>Loading updates…</h3>';
+          empty.style.display = 'block';
+          return;
+        }
+
+        if (!items.length) {
+          const filtering = categoryFilter !== 'all' || searchTerm;
+          container.innerHTML = '';
+          empty.innerHTML = filtering
+            ? '<div class="empty-icon">📭</div><h3>No updates found</h3><p>Try adjusting your search or filter criteria.</p>'
+            : '<div class="empty-icon">📭</div><h3>Nothing sent yet</h3><p>Use the button at the top right to send your first update.</p>';
+          empty.style.display = 'block';
+          return;
+        }
+
+        empty.style.display = 'none';
+        container.innerHTML = items.map(i => {
+          try {
+            return i.type === 'announcement' ? announcementCard(i.data) :
+                   i.type === 'event' ? eventCard(i.data) : notificationCard(i.data);
+          } catch (err) {
+            console.error('Staff Hub: could not draw an item', i, err);
+            return '';
+          }
+        }).join('');
+      }
+
+      function announcementCard(a) {
+        return `
+          <div class="hub-feed-item hub-item-announcement" id="hub-ann-${esc(a.id)}">
+            <div class="card-priority ${esc(a.priority)}"></div>
+            <div style="padding-left:12px;">
+              <div class="hub-type-label type-announcement">📢 ANNOUNCEMENT</div>
+              <div class="flex items-center gap-md" style="flex-wrap:wrap; margin-bottom:var(--space-sm);">
+                ${a.pinned ? '<span class="badge badge-primary">📌 Pinned</span>' : ''}
+                ${UI.priorityBadge(a.priority)}
+                ${UI.categoryBadge(esc(a.category))}
+              </div>
+              <h3 style="margin-bottom:var(--space-sm);">${esc(a.title)}</h3>
+              <div class="announcement-body">${esc(a.body)}</div>
+              <div class="announcement-meta">
+                <span>✍️ ${esc(a.author)}</span>
+                <span>📅 ${UI.formatDate(a.date)}</span>
+                ${audienceLabel(a)}
+              </div>
+              <div class="hub-actions">
+                <button class="hub-action-btn ah-actions-danger" data-action="delete" data-type="announcement" data-collection="${esc(a._collection || 'announcement_SS')}" data-id="${esc(a.id)}">🗑️ Delete</button>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      function eventCard(ev) {
+        const d = new Date(ev.date + 'T00:00:00');
+        return `
+          <div class="hub-feed-item hub-item-event" id="hub-ev-${esc(ev.id)}">
+            <div class="hub-type-label type-event">📅 EVENT</div>
+            <div class="hub-event-layout">
+              <div class="event-date-badge" style="width:52px; height:58px;">
+                <span class="day" style="font-size:1.2rem;">${d.getDate()}</span>
+                <span class="month" style="font-size:0.6rem;">${d.toLocaleDateString('en-US', { month: 'short' })}</span>
+              </div>
+              <div style="flex:1; min-width:0;">
+                <div class="flex items-center gap-md" style="flex-wrap:wrap; margin-bottom:var(--space-sm);">
+                  <span class="tag">${esc(ev.category)}</span>
+                  <span class="text-muted text-sm">${d.toLocaleDateString('en-US', { weekday: 'long' })}</span>
+                </div>
+                <h3 style="margin-bottom:var(--space-sm);">${esc(ev.title)}</h3>
+                <p class="text-secondary text-sm" style="margin-bottom:var(--space-md); line-height:1.6;">${esc(ev.description)}</p>
+                <div class="flex items-center gap-lg" style="flex-wrap:wrap;">
+                  <span class="text-muted text-sm">📍 ${esc(ev.location)}</span>
+                  <span class="text-muted text-sm">🕐 ${esc(ev.time)}</span>
+                  ${audienceLabel(ev)}
+                </div>
+              </div>
+            </div>
+            <div class="hub-actions">
+              <button class="hub-action-btn ah-actions-danger" data-action="delete" data-type="event" data-collection="${esc(ev._collection || 'event_SS')}" data-id="${esc(ev.id)}">🗑️ Delete</button>
+            </div>
+          </div>`;
+      }
+
+      function notificationCard(n) {
+        return `
+          <div class="hub-feed-item hub-item-notification" id="hub-notif-${esc(n.id)}">
+            <div class="hub-type-label type-notification">🔔 NOTIFICATION</div>
+            <div class="flex items-center gap-md">
+              <div class="notification-dot ${esc(n.type)}">${esc(n.icon)}</div>
+              <div style="flex:1; min-width:0;">
+                <div class="font-semibold text-sm" style="margin-bottom:2px;">${esc(n.title)}</div>
+                <div class="text-secondary" style="font-size:0.83rem; margin-bottom:4px;">${esc(n.message)}</div>
+                <div class="text-muted" style="font-size:0.75rem;">${esc(n.category)} · ${UI.formatDate(n.date)} ${audienceLabel(n)}</div>
+              </div>
+            </div>
+            <div class="hub-actions">
+              <button class="hub-action-btn ah-actions-danger" data-action="delete" data-type="notification" data-collection="${esc(n._collection || 'notification_SS')}" data-id="${esc(n.id)}">🗑️ Delete</button>
+            </div>
+          </div>`;
+      }
+
+      // ─── Actions ───
+      async function deleteItem(type, id, collectionName) {
+        if (!confirm(`Delete this ${type}? This can’t be undone.`)) return;
+        try {
+          await deleteDoc(doc(db, collectionName || HUB[type].collection, id));
+        } catch (err) {
+          console.error(err);
+          UI.toast('Couldn’t delete it: ' + (err.message || 'see the browser console.'), 'error');
+          return;
+        }
+        UI.toast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`, 'warning');
+        renderFeed();
+      }
+
+      function updateCreateButton() {
+        $('btnCreate').textContent = CREATE_LABELS[typeFilter];
+      }
+
+      function setChip(selector, attr, value) {
+        document.querySelectorAll(selector).forEach(c => c.classList.toggle('active', c.dataset[attr] === value));
+      }
+
+      // ─── Init ───
+      document.addEventListener('DOMContentLoaded', () => {
+        if (!initPage('staff-hub')) return;
+
+        buildModals();
+        startHubSync();
+
+        $('btnCreate').addEventListener('click', () => openForm(typeFilter));
+
+        document.addEventListener('click', (e) => {
+          const closeBtn = e.target.closest('[data-close]');
+          if (closeBtn) return UI.closeModal(closeBtn.dataset.close);
+
+          const submitBtn = e.target.closest('[data-submit]');
+          if (submitBtn) {
+            const kind = Object.keys(FORMS).find(k => FORMS[k].modalId === submitBtn.dataset.submit);
+            return submit(kind);
+          }
+
+          const actionBtn = e.target.closest('[data-action]');
+          if (!actionBtn) return;
+          if (actionBtn.dataset.action === 'delete') deleteItem(actionBtn.dataset.type, actionBtn.dataset.id, actionBtn.dataset.collection);
+        });
+
+        // Limit "Choose Students" to 20
+        document.addEventListener('change', (e) => {
+          const t = e.target;
+          if (!t.matches || !t.matches('input[data-pick]')) return;
+          const p = t.dataset.pick;
+          if (checkedIds(p).length > MAX_PICK) {
+            t.checked = false;
+            UI.toast(`You can choose up to ${MAX_PICK} students.`, 'warning');
+          }
+          updatePickCount(p);
+        });
+
+        document.querySelectorAll('.hub-filter-chip').forEach(c => c.addEventListener('click', () => {
+          typeFilter = c.dataset.type;
+          setChip('.hub-filter-chip', 'type', typeFilter);
+          updateCreateButton();
+          renderFeed();
+        }));
+        document.querySelectorAll('.hub-cat-chip').forEach(c => c.addEventListener('click', () => {
+          categoryFilter = c.dataset.cat;
+          setChip('.hub-cat-chip', 'cat', categoryFilter);
+          renderFeed();
+        }));
+
+        const search = $('hubSearch');
+        search.addEventListener('input', () => { searchTerm = search.value.trim().toLowerCase(); renderFeed(); });
+        search.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') { search.value = ''; searchTerm = ''; renderFeed(); search.blur(); }
+        });
+
+        document.querySelectorAll('.modal-overlay').forEach(m => {
+          m.addEventListener('click', (e) => { if (e.target === m) m.classList.remove('active'); });
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+        });
+
+        // Deep link: staff-hub.html?create=announcement | event | notification
+        const create = new URLSearchParams(window.location.search).get('create');
+        if (FORMS[create]) {
+          typeFilter = create;
+          setChip('.hub-filter-chip', 'type', typeFilter);
+          updateCreateButton();
+          openForm(create);
+        }
+
+        renderFeed();
+      });
+    })();
+  </script>
+</body>
+
+</html>
