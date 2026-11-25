@@ -68,6 +68,25 @@
     .pl-voter-row small { display: block; color: var(--text-muted); }
     .pl-voter-row time { color: var(--text-muted); font-size: .8rem; white-space: nowrap; }
 
+
+    /* Delete confirmation popup */
+    .dc-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px;
+      background: rgba(5, 8, 20, .65); backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+    .dc-overlay.show { opacity: 1; pointer-events: auto; }
+    .dc-box { width: 100%; max-width: 420px; padding: 28px 28px 22px; text-align: center; border-radius: 20px;
+      background: var(--bg-surface, #12172b); color: var(--text-primary, #fff); border: 1px solid rgba(239, 68, 68, .35);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, .5); transform: translateY(12px) scale(.96); transition: transform .18s ease; }
+    .dc-overlay.show .dc-box { transform: none; }
+    .dc-icon { width: 60px; height: 60px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 1.7rem;
+      border-radius: 50%; background: rgba(239, 68, 68, .14); border: 1px solid rgba(239, 68, 68, .4); }
+    .dc-title { margin: 0 0 8px; font-size: 1.25rem; font-weight: 700; }
+    .dc-text { margin: 0 0 24px; font-size: .92rem; line-height: 1.55; color: var(--text-muted, #94a3b8); }
+    .dc-actions { display: flex; gap: 12px; }
+    .dc-actions .btn { flex: 1; justify-content: center; }
+    .dc-confirm { background: #ef4444 !important; border-color: #ef4444 !important; color: #fff !important; }
+    .dc-confirm:hover { background: #dc2626 !important; }
+    .dc-confirm:disabled { opacity: .6; cursor: wait; }
+
     @media (max-width: 640px) {
       .ah-header-side { align-items: stretch; width: 100%; }
       .ah-row { grid-template-columns: 1fr; gap: 0; }
@@ -749,9 +768,46 @@
           </div>`;
       }
 
+      // ─── Delete confirmation popup (replaces the browser's confirm()) ───
+      function confirmDelete(type) {
+        return new Promise((resolve) => {
+          const overlay = document.createElement('div');
+          overlay.className = 'dc-overlay';
+          overlay.innerHTML = `
+            <div class="dc-box" role="alertdialog" aria-modal="true" aria-labelledby="dcTitle" aria-describedby="dcText">
+              <div class="dc-icon">🗑️</div>
+              <h3 class="dc-title" id="dcTitle">Delete this ${esc(type)}?</h3>
+              <p class="dc-text" id="dcText">This will permanently remove it for everyone. You can’t undo this.</p>
+              <div class="dc-actions">
+                <button type="button" class="btn btn-secondary" data-dc="cancel">Cancel</button>
+                <button type="button" class="btn dc-confirm" data-dc="ok">Delete</button>
+              </div>
+            </div>`;
+          document.body.appendChild(overlay);
+          requestAnimationFrame(() => overlay.classList.add('show'));
+
+          const finish = (result) => {
+            document.removeEventListener('keydown', onKey, true);
+            overlay.classList.remove('show');
+            setTimeout(() => overlay.remove(), 200);
+            resolve(result);
+          };
+          const onKey = (e) => {
+            if (e.key === 'Escape') { e.stopPropagation(); finish(false); }
+          };
+          document.addEventListener('keydown', onKey, true);
+          overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) return finish(false);
+            const b = e.target.closest('[data-dc]');
+            if (b) finish(b.dataset.dc === 'ok');
+          });
+          overlay.querySelector('[data-dc="cancel"]').focus();
+        });
+      }
+
       // ─── Actions ───
       async function deleteItem(type, id, collectionName) {
-        if (!confirm(`Delete this ${type}? This can’t be undone.`)) return;
+        if (!(await confirmDelete(type))) return;
         try {
           await deleteDoc(doc(db, collectionName || HUB[type].collection, id));
         } catch (err) {
