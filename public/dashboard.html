@@ -12,6 +12,15 @@
     /* Clickable dashboard items */
     [data-href] { cursor: pointer; }
     [data-href]:focus-visible { outline: 2px solid var(--primary, #6366f1); outline-offset: 2px; }
+    /* Staff Inbox (announcement_IP) */
+    .inbox-filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:var(--space-lg, 20px); }
+    .inbox-chip { border:1px solid var(--border, rgba(128,128,128,.35)); background:transparent; color:inherit;
+      padding:6px 14px; border-radius:999px; font-size:.85rem; cursor:pointer; }
+    .inbox-chip.active { background:var(--primary, #6366f1); border-color:var(--primary, #6366f1); color:#fff; }
+    .inbox-item { padding:var(--space-lg, 16px); border:1px solid var(--border, rgba(128,128,128,.25)); border-radius:12px; }
+    .inbox-item h4 { margin:0 0 6px; }
+    .inbox-item p { margin:0 0 10px; white-space:pre-wrap; }
+    .inbox-meta { display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:.78rem; }
   </style>
 </head>
 
@@ -81,6 +90,29 @@
         </div>
       </div>
 
+      <!-- Staff Inbox: announcements the admin sent to Instructors and Professors (read-only) -->
+      <div class="card mt-xl" style="transform:none;" id="staffInbox">
+        <div class="flex items-center justify-between mb-lg">
+          <h3>📥 Staff Inbox</h3>
+          <span class="text-muted text-sm">From the admin office</span>
+        </div>
+        <div class="inbox-filters" id="inboxTypeFilters">
+          <button class="inbox-chip active" data-type="all">All</button>
+          <button class="inbox-chip" data-type="announcement">📢 Announcements</button>
+          <button class="inbox-chip" data-type="event">📅 Events</button>
+          <button class="inbox-chip" data-type="notification">🔔 Notifications</button>
+        </div>
+        <div class="inbox-filters" id="inboxFilters">
+          <button class="inbox-chip active" data-cat="all">All</button>
+          <button class="inbox-chip" data-cat="Academic">Academic</button>
+          <button class="inbox-chip" data-cat="Student Life">Student Life</button>
+          <button class="inbox-chip" data-cat="Facilities">Facilities</button>
+          <button class="inbox-chip" data-cat="Sports">Sports</button>
+          <button class="inbox-chip" data-cat="Career">Career</button>
+        </div>
+        <div id="inboxFeed" class="flex flex-col gap-md"></div>
+      </div>
+
     </main>
   </div>
 
@@ -97,6 +129,9 @@
       annHub: { collection: 'announcement_hub', kind: 'announcement' },
       evHub: { collection: 'event_hub', kind: 'event' },
       notifHub: { collection: 'notification_hub', kind: 'notification' },
+      inboxAnn: { collection: 'announcement_IP', kind: 'inbox', feedType: 'announcement' },
+      inboxEv: { collection: 'event_IP', kind: 'inbox', feedType: 'event' },
+      inboxNotif: { collection: 'notification_IP', kind: 'inbox', feedType: 'notification' },
       sentAnn: { collection: 'announcement_SS', kind: 'sent', own: true },
       sentEv: { collection: 'event_SS', kind: 'sent', own: true },
       sentNotif: { collection: 'notification_SS', kind: 'sent', own: true }
@@ -139,6 +174,7 @@
         ...data,
         id: snapshotDoc.id,
         _collection: src.collection,
+        feedType: src.feedType,
         createdMs,
         date: data.date || (createdMs ? isoDate(new Date(createdMs)) : isoDate(new Date()))
       };
@@ -288,6 +324,7 @@
 
       renderRecentAnnouncements(annState, recentAnnouncements.slice(0, 4));
       renderUpcomingEvents(evState, upcomingEvents.slice(0, 3));
+      renderInbox();
     }
 
     function setStat(id, state, value) {
@@ -360,6 +397,110 @@
             </div>
           </div>`;
       }).join('');
+    }
+
+    // ─── Staff Inbox (announcement_IP, event_IP, notification_IP — read-only) ───
+    let inboxCategory = 'all';
+    let inboxType = 'all';
+
+    document.addEventListener('click', (e) => {
+      const typeChip = e.target.closest('#inboxTypeFilters .inbox-chip');
+      if (typeChip) {
+        document.querySelectorAll('#inboxTypeFilters .inbox-chip').forEach(c => c.classList.remove('active'));
+        typeChip.classList.add('active');
+        inboxType = typeChip.dataset.type;
+        renderInbox();
+        return;
+      }
+      const catChip = e.target.closest('#inboxFilters .inbox-chip');
+      if (catChip) {
+        document.querySelectorAll('#inboxFilters .inbox-chip').forEach(c => c.classList.remove('active'));
+        catChip.classList.add('active');
+        inboxCategory = catChip.dataset.cat;
+        renderInbox();
+      }
+    });
+
+    function inboxCard(item) {
+      if (item.feedType === 'event') {
+        return `
+          <div class="inbox-item">
+            <div class="inbox-meta" style="margin-bottom:6px;">
+              <span class="badge badge-primary">📅 EVENT</span>
+              ${UI.categoryBadge(item.category)}
+            </div>
+            <h4>${escapeHtml(item.title)}</h4>
+            <p>${escapeHtml(item.description)}</p>
+            <div class="inbox-meta text-muted">
+              <span>📍 ${escapeHtml(item.location)}</span>
+              <span>📅 ${UI.formatDate(item.date)}</span>
+              <span>🕐 ${escapeHtml(item.time)}</span>
+              <span>✍️ ${escapeHtml(item.author)}</span>
+            </div>
+          </div>`;
+      }
+      if (item.feedType === 'notification') {
+        return `
+          <div class="inbox-item">
+            <div class="inbox-meta" style="margin-bottom:6px;">
+              <span class="badge badge-primary">🔔 NOTIFICATION</span>
+              ${UI.categoryBadge(item.category)}
+            </div>
+            <h4>${escapeHtml(item.icon || '')} ${escapeHtml(item.title)}</h4>
+            <p>${escapeHtml(item.message)}</p>
+            <div class="inbox-meta text-muted">
+              <span>✍️ ${escapeHtml(item.author)}</span>
+              <span>📅 ${UI.formatDate(item.date)}</span>
+            </div>
+          </div>`;
+      }
+      return `
+        <div class="inbox-item">
+          <div class="inbox-meta" style="margin-bottom:6px;">
+            <span class="badge badge-primary">📢 ANNOUNCEMENT</span>
+            ${item.pinned ? '<span class="badge badge-primary">📌 Pinned</span>' : ''}
+            ${UI.priorityBadge(item.priority)}
+            ${UI.categoryBadge(item.category)}
+          </div>
+          <h4>${escapeHtml(item.title)}</h4>
+          <p>${escapeHtml(item.body)}</p>
+          <div class="inbox-meta text-muted">
+            <span>✍️ ${escapeHtml(item.author)}</span>
+            <span>📅 ${UI.formatDate(item.date)}</span>
+          </div>
+        </div>`;
+    }
+
+    function renderInbox() {
+      const container = document.getElementById('inboxFeed');
+      if (!container) return;
+      const state = stateOf('inbox');
+      if (state === 'loading') {
+        container.innerHTML = '<div class="text-muted text-sm">Loading your inbox…</div>';
+        return;
+      }
+      if (state === 'error') {
+        container.innerHTML = statusBox('⚠️', 'Couldn’t load your inbox',
+          `Firestore returned: ${escapeHtml(errorOf('inbox'))}. Check that you’re signed in as a staff member.`);
+        return;
+      }
+
+      const all = itemsOf('inbox');
+      const list = all
+        .filter(i => inboxType === 'all' || i.feedType === inboxType)
+        .filter(i => inboxCategory === 'all' || i.category === inboxCategory)
+        .sort((a, b) => (Number(!!b.pinned) - Number(!!a.pinned)) ||
+                        (b.createdMs - a.createdMs) ||
+                        dateKey(b.date).localeCompare(dateKey(a.date)));
+
+      if (list.length === 0) {
+        container.innerHTML = all.length === 0
+          ? statusBox('📭', 'Your inbox is empty', 'Announcements, events and notifications the admin sends to Instructors and Professors will show up here.')
+          : statusBox('🔍', 'Nothing matches these filters', 'Try another type or category.');
+        return;
+      }
+
+      container.innerHTML = list.map(inboxCard).join('');
     }
 
     // ─── Dashboard Search (searches the live Firestore data) ───
